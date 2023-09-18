@@ -84,7 +84,7 @@ async def read_ips_in_s3(start, end):
             s3_object_name = config.s3_input_object.format(i)
             print(f"load ips from {s3_object_name}")
             ips = s3.Object(config.bucket, s3_object_name).get()['Body'].read().decode('utf-8').splitlines()
-            m_ips[sheet_name] = ips[1:]
+            m_ips[sheet_name] = [str(ip).strip() for ip in ips[1:]]
             print(f"Done load {sheet_name}: {len(m_ips[sheet_name])}")
         return m_ips
     return await asyncio.to_thread(__load_ip_from_s3)
@@ -137,7 +137,7 @@ async def run(file, start, end):
     # sheet_names = await get_sheet_names(file, start - 1, end)
     print(f"start load all ips from {file}", flush=True)
     # mips = await read_ips_in_excel(file, sheet_names)
-    mips = await read_ips_in_s3(start,end)
+    mips = await read_ips_in_s3(start,end+1)
     print(f"start run crawl", flush=True)
     await supervisor(mips)
     print(f"done", flush=True)
