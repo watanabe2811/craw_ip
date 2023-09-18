@@ -7,6 +7,7 @@ import traceback
 from pathlib import Path
 
 import aioboto3
+import boto3
 import httpx
 import pandas as pd
 import simplejson as json
@@ -25,7 +26,10 @@ async def get_location(client: AsyncClient, ip):
     }
     try:
         response = await client.get(url)
-        data = response.json()
+        try:
+            data = response.json()
+        except:
+            print(response)
         rs.update(data)
         return rs
     except Exception as e:
@@ -33,9 +37,8 @@ async def get_location(client: AsyncClient, ip):
         rs.update({
             "error": traceback.format_exc()
         })
-        return rs
-        # raise e
-
+        # return rs
+        raise e
 
 
 async def write_location(client: AsyncClient, ip, out, semaphore):
@@ -55,21 +58,36 @@ async def run_crawl_to_local_file(client: AsyncClient, ips: list[str], sheet_nam
             await coro
 
 
-async def read_ips_in_excel(file, sheet_names):
-    def __read_source_excel():
-        df = pd.read_excel(file, sheet_name=sheet_names)
-        m_ips = {}
-        for sheet_name in sheet_names:
-            ips = []
-            for ip in df[sheet_name]['IP_ADDRESS']:
-                ips.append(ip)
-            m_ips[sheet_name] = ips
-        return m_ips
-
-    return await asyncio.to_thread(__read_source_excel)
-
-
+#
+# async def read_ips_in_excel(file, sheet_names):
+#     def __read_source_excel():
+#         df = pd.read_excel(file, sheet_name=sheet_names)
+#         m_ips = {}
+#         for sheet_name in sheet_names:
+#             ips = []
+#             for ip in df[sheet_name]['IP_ADDRESS']:
+#                 ips.append(ip)
+#             m_ips[sheet_name] = ips
+#         return m_ips
+#
+#     return await asyncio.to_thread(__read_source_excel)
 session = aioboto3.Session()
+s3 = boto3.resource('s3')
+
+
+async def read_ips_in_s3(start, end):
+    def __load_ip_from_s3():
+        m_ips = {}
+        for i in range(start, end):
+            sheet_name = config.input_sheet_name.format(i)
+            print(f"run load sheet {i}")
+            s3_object_name = config.s3_input_object.format(i)
+            print(f"load ips from {s3_object_name}")
+            ips = s3.Object(config.bucket, s3_object_name).get()['Body'].read().decode('utf-8').splitlines()
+            m_ips[sheet_name] = ips[1:]
+            print(f"Done load {sheet_name}: {len(m_ips[sheet_name])}")
+        return m_ips
+    return await asyncio.to_thread(__load_ip_from_s3)
 
 
 async def upload_local_file_to_s3(sheet_name):
@@ -81,10 +99,10 @@ async def upload_local_file_to_s3(sheet_name):
         object_name = os.path.basename(file_name)
     staging_path = Path(file_name)
     # Upload the file
-    async with session.client("s3") as s3:
+    async with session.client("s3") as s3_async:
         try:
             with staging_path.open("rb") as spfp:
-                await s3.upload_fileobj(spfp, bucket, object_name)
+                await s3_async.upload_fileobj(spfp, bucket, object_name)
         except ClientError as e:
             logging.error(e)
             return False
@@ -105,26 +123,21 @@ async def supervisor(mips: dict[str, list[str]]):
             await run_craw_one(client, sheet_name, ips)
 
 
-async def get_sheet_names(file, start, end):
-    # def __get_sheet_name():
-    #     sheet_names = []
-    #     with open("data/sheet_names.txt", 'r') as text_file:
-    #         for line in itertools.islice(text_file, start, end):
-    #             sheet_names.append(str(line).strip())
-    #     return sheet_names
-    def __get_sheet_name():
-        input = pd.ExcelFile(file)
-        return input.sheet_names[start:end]
-
-    return await asyncio.to_thread(__get_sheet_name)
+# async def get_sheet_names(file, start, end):
+#     def __get_sheet_name():
+#         input = pd.ExcelFile(file)
+#         return input.sheet_names[start:end]
+#
+#     return await asyncio.to_thread(__get_sheet_name)
 
 
 async def run(file, start, end):
     print(f"start run craws {file} from {start} -> {end}", flush=True)
-    print(f"load sheet name from {start} -> {end}", flush=True)
-    sheet_names = await get_sheet_names(file,start - 1, end)
+    # print(f"load sheet name from {start} -> {end}", flush=True)
+    # sheet_names = await get_sheet_names(file, start - 1, end)
     print(f"start load all ips from {file}", flush=True)
-    mips = await read_ips_in_excel(file, sheet_names)
+    # mips = await read_ips_in_excel(file, sheet_names)
+    mips = await read_ips_in_s3(start,end)
     print(f"start run crawl", flush=True)
     await supervisor(mips)
     print(f"done", flush=True)
